@@ -1,10 +1,10 @@
-name: VS2026 to Repository - Batch Push
+name: VS2026 Offline Layout
 
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'ذخیره به'
+        description: 'Save to'
         required: true
         default: 'repository'
         type: choice
@@ -34,26 +34,28 @@ jobs:
           Get-Content "layout.log" -Tail 30
         shell: powershell
 
-      - name: Check Size & Warning
+      - name: Check Size
         id: check
         run: |
-          $sizeGB = [math]::Round((Get-ChildItem "C:\VS2026_Layout" -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1GB, 2)
+          $sizeBytes = (Get-ChildItem "C:\VS2026_Layout" -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          $sizeGB = [math]::Round($sizeBytes / 1GB, 2)
           Write-Host "Layout size: $sizeGB GB"
           "size_gb=$sizeGB" >> $env:GITHUB_OUTPUT
           
           if ($sizeGB -gt 0.5 -and "${{ inputs.target }}" -eq "artifacts") {
-            Write-Host "::warning::⚠️ پلن Free شما فقط 500MB فضای Artifact دارد اما Layout شما $sizeGB GB است. آپلود Artifact ممکن است شکست بخورد."
+            Write-Host "::warning::Warning: Free plan has only 500MB artifact storage, but layout is $sizeGB GB. Upload may fail."
           }
         shell: powershell
 
-      # ====================== حالت Repository ======================
-      - name: Compress and Split for Repository
+      - name: Compress and Split (Repository)
         if: inputs.target == 'repository'
         run: |
           if (Test-Path "C:\VS2026_Layout") {
             New-Item -Path "downloads/VS2026" -ItemType Directory -Force
             & "C:\Program Files\7-Zip\7z.exe" a -v45m -mx3 "downloads/VS2026/VS2026.part" "C:\VS2026_Layout\*"
             Write-Host "Total parts created: $((Get-ChildItem downloads/VS2026).Count)"
+          } else {
+            Write-Host "ERROR: Layout folder not found"
           }
         shell: powershell
 
@@ -69,7 +71,7 @@ jobs:
          
           for ($i = 0; $i -lt $total; $i += $batchSize) {
             $batch = $parts | Select-Object -Skip $i -First $batchSize
-            Write-Host "Pushing batch $($i/$batchSize + 1) ..."
+            Write-Host "Pushing batch $($i + 1) of $total ..."
            
             git add $batch.FullName
             git commit -m "Add VS2026 parts batch $($i + 1)" --allow-empty
@@ -77,8 +79,7 @@ jobs:
           }
         shell: powershell
 
-      # ====================== حالت Artifacts ======================
-      - name: Upload as Artifact (Free Plan)
+      - name: Upload as Artifact
         if: inputs.target == 'artifacts'
         uses: actions/upload-artifact@v4
         with:
