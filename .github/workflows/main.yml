@@ -1,0 +1,87 @@
+name: VS2026 to Repository - Batch Push
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'ذخیره به'
+        required: true
+        default: 'repository'
+        type: choice
+        options:
+          - repository
+          - artifacts
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Bootstrapper
+        run: Invoke-WebRequest -Uri "https://aka.ms/vs/18/Stable/vs_community.exe" -OutFile "vs_community.exe"
+        shell: powershell
+
+      - name: Create Offline Layout
+        run: |
+          Write-Host "Starting Layout Creation..."
+          .\vs_community.exe --layout "C:\VS2026_Layout" --config "response.json" --lang en-US --quiet --wait | Out-File "layout.log" -Encoding UTF8
+          Get-Content "layout.log" -Tail 30
+        shell: powershell
+
+      - name: Check Size & Warning
+        id: check
+        run: |
+          $sizeGB = [math]::Round((Get-ChildItem "C:\VS2026_Layout" -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1GB, 2)
+          Write-Host "Layout size: $sizeGB GB"
+          "size_gb=$sizeGB" >> $env:GITHUB_OUTPUT
+          
+          if ($sizeGB -gt 0.5 -and "${{ inputs.target }}" -eq "artifacts") {
+            Write-Host "::warning::⚠️ پلن Free شما فقط 500MB فضای Artifact دارد اما Layout شما $sizeGB GB است. آپلود Artifact ممکن است شکست بخورد."
+          }
+        shell: powershell
+
+      # ====================== حالت Repository ======================
+      - name: Compress and Split for Repository
+        if: inputs.target == 'repository'
+        run: |
+          if (Test-Path "C:\VS2026_Layout") {
+            New-Item -Path "downloads/VS2026" -ItemType Directory -Force
+            & "C:\Program Files\7-Zip\7z.exe" a -v45m -mx3 "downloads/VS2026/VS2026.part" "C:\VS2026_Layout\*"
+            Write-Host "Total parts created: $((Get-ChildItem downloads/VS2026).Count)"
+          }
+        shell: powershell
+
+      - name: Push in batches to Repository
+        if: inputs.target == 'repository'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+         
+          $parts = Get-ChildItem "downloads/VS2026/VS2026.part.*" | Sort-Object Name
+          $total = $parts.Count
+          $batchSize = 10
+         
+          for ($i = 0; $i -lt $total; $i += $batchSize) {
+            $batch = $parts | Select-Object -Skip $i -First $batchSize
+            Write-Host "Pushing batch $($i/$batchSize + 1) ..."
+           
+            git add $batch.FullName
+            git commit -m "Add VS2026 parts batch $($i + 1)" --allow-empty
+            git push
+          }
+        shell: powershell
+
+      # ====================== حالت Artifacts ======================
+      - name: Upload as Artifact (Free Plan)
+        if: inputs.target == 'artifacts'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VS2026_Layout
+          path: C:\VS2026_Layout
+          retention-days: 7
